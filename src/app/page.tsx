@@ -1,65 +1,246 @@
-import Image from "next/image";
 
-export default function Home() {
+"use client";
+import * as React from "react";
+
+type Task = {
+  text: string;
+  done: boolean;
+};
+
+export default function LazyNote() {
+  const [transcript, setTranscript] = React.useState("");
+  const [listening, setListening] = React.useState(false);
+  const [tasks, setTasks] = React.useState<Task[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const recognitionRef = React.useRef<any>(null);
+
+  // Setup Web Speech API
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const SpeechRecognition =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+    recognitionRef.current = new SpeechRecognition();
+    recognitionRef.current.continuous = true;
+    recognitionRef.current.interimResults = true;
+    recognitionRef.current.lang = "en-US";
+    recognitionRef.current.onresult = (event: any) => {
+      let fullTranscript = "";
+      for (let i = 0; i < event.results.length; ++i) {
+        fullTranscript += event.results[i][0].transcript;
+      }
+      setTranscript(fullTranscript);
+    };
+    recognitionRef.current.onerror = (event: any) => {
+      setError("Microphone error: " + event.error);
+      setListening(false);
+    };
+    recognitionRef.current.onend = () => {
+      setListening(false);
+    };
+  }, []);
+
+  const handleMic = () => {
+    setError(null);
+    if (!recognitionRef.current) {
+      setError("Speech Recognition not supported in this browser.");
+      return;
+    }
+    if (listening) {
+      recognitionRef.current.stop();
+      setListening(false);
+    } else {
+      recognitionRef.current.start();
+      setListening(true);
+    }
+  };
+
+
+  const handleGenerate = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Unknown error");
+      // Handle code block output
+      let newTasks: string[] = [];
+      if (typeof data.tasks === "string") {
+        // Remove code block markers if present
+        let txt = data.tasks.trim();
+        if (txt.startsWith("```json")) txt = txt.replace(/^```json/, "").replace(/```$/, "").trim();
+        try {
+          newTasks = JSON.parse(txt);
+        } catch {
+          newTasks = txt.split("\n").map((t) => t.trim()).filter(Boolean);
+        }
+      } else {
+        newTasks = data.tasks || [];
+      }
+      // Filter out code block markers, brackets, and empty lines
+      const filteredTasks = newTasks.filter((t) => {
+        if (typeof t !== "string") return false;
+        const trimmed = t.trim();
+        if (!trimmed) return false;
+        if (["[", "]", "```", "```json", "json", "\"\"\""].includes(trimmed)) return false;
+        if (/^\[.*\]$/.test(trimmed)) return false; // lines that are just brackets
+        return true;
+      });
+      // Append new tasks, avoid duplicates
+      setTasks((prev) => {
+        const prevTexts = new Set(prev.map((t) => t.text));
+        const merged = [...prev];
+        for (const t of filteredTasks) {
+          if (typeof t === "string" && !prevTexts.has(t)) {
+            // Remove leading/trailing quotes and trailing commas
+            let clean = t.trim().replace(/^"/, "").replace(/",?$/, "").replace(/,$/, "");
+            merged.push({ text: clean, done: false });
+          }
+        }
+        return merged;
+      });
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Save tasks to backend
+  const handleSaveTasks = async () => {
+    setError(null);
+    try {
+      const res = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tasks }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save tasks");
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+
+  // Load tasks from backend
+  const handleLoadTasks = async () => {
+    setError(null);
+    try {
+      const res = await fetch("/api/tasks");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load tasks");
+      // If loaded tasks are string[] (old format), convert
+      if (Array.isArray(data.tasks) && typeof data.tasks[0] === "string") {
+        setTasks(data.tasks.map((t: string) => ({ text: t, done: false })));
+      } else {
+        setTasks(data.tasks || []);
+      }
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+
+  // Toggle done/undone
+  const handleToggleDone = (idx: number) => {
+    setTasks((prev) => prev.map((t, i) => i === idx ? { ...t, done: !t.done } : t));
+  };
+
+  // Remove a task
+  const handleRemoveTask = (idx: number) => {
+    setTasks((prev) => prev.filter((_, i) => i !== idx));
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div className="min-h-screen bg-zinc-950 text-zinc-50 flex flex-col items-center justify-center px-4 py-8">
+      <div className="w-full max-w-xl bg-zinc-900 rounded-2xl shadow-lg p-8 flex flex-col gap-6 border border-zinc-800">
+        <h1 className="text-3xl font-bold mb-2 tracking-tight">LazyNote</h1>
+        <p className="text-zinc-400 mb-4">Speak, transcribe, and extract actionable tasks with AI.</p>
+
+        {/* Microphone Button */}
+        <button
+          onClick={handleMic}
+          className={`flex items-center justify-center w-14 h-14 rounded-full border-2 transition-colors ${listening ? "bg-red-600 border-red-400 animate-pulse" : "bg-zinc-800 border-zinc-700 hover:bg-zinc-700"}`}
+          aria-label={listening ? "Stop recording" : "Start recording"}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+            className="w-7 h-7"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M12 18.25v2.25m0 0h3m-3 0H9m6-6.75a3 3 0 11-6 0v-4.5a3 3 0 116 0v4.5z"
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          </svg>
+        </button>
+        <textarea
+          className="w-full min-h-[100px] max-h-48 rounded-lg bg-zinc-800 border border-zinc-700 p-3 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-vertical"
+          placeholder="Transcript will appear here..."
+          value={transcript}
+          onChange={(e) => setTranscript(e.target.value)}
+        />
+        <button
+          onClick={handleGenerate}
+          disabled={loading || !transcript.trim()}
+          className="w-full py-3 rounded-lg bg-blue-600 hover:bg-blue-700 transition-colors font-semibold text-lg disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {loading ? "Generating..." : "Generate Tasks"}
+        </button>
+        <div className="flex gap-2 mt-2">
+          <button
+            onClick={handleSaveTasks}
+            disabled={tasks.length === 0}
+            className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 transition-colors font-semibold text-sm disabled:opacity-50"
           >
-            Documentation
-          </a>
+            Save Tasks
+          </button>
+          <button
+            onClick={handleLoadTasks}
+            className="px-4 py-2 rounded-lg bg-yellow-600 hover:bg-yellow-700 transition-colors font-semibold text-sm"
+          >
+            Load Tasks
+          </button>
         </div>
-      </main>
+        {error && <div className="text-red-400 text-sm mt-2">{error}</div>}
+        {tasks.length > 0 && (
+          <div className="flex flex-col gap-3 mt-4">
+            <h2 className="text-xl font-semibold mb-2">Tasks</h2>
+            <div className="grid gap-3">
+              {tasks.map((task, i) => (
+                <div
+                  key={i}
+                  className={`flex items-center gap-3 rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-3 text-zinc-100 shadow-sm ${task.done ? "opacity-50 line-through" : ""}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={task.done}
+                    onChange={() => handleToggleDone(i)}
+                    className="accent-blue-500 w-5 h-5"
+                  />
+                  <span className="flex-1">{task.text}</span>
+                  <button
+                    onClick={() => handleRemoveTask(i)}
+                    className="ml-2 px-2 py-1 rounded bg-red-700 hover:bg-red-800 text-xs"
+                    aria-label="Remove task"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      <footer className="mt-8 text-xs text-zinc-600 dark:text-zinc-400 opacity-70">No data stored. Powered by OpenAI.</footer>
     </div>
   );
 }
